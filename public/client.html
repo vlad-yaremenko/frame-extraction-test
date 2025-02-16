@@ -158,7 +158,7 @@
                         };
 
                         // Replace the existing fetch call with more comprehensive stats
-                        await fetch('http://localhost:3000/measure', {
+                        await fetch('/measure', {
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json'
@@ -188,7 +188,7 @@
         try {
             console.log("Starting HD video decode...");
             const hdStats = await start({ 
-                dataUri: "http://localhost:3000/video", 
+                dataUri: "/video", 
                 rendererName: "2d", 
                 canvas: document.getElementById("videoCanvas") 
             });
@@ -196,7 +196,7 @@
 
             console.log("Starting 4K video decode...");
             const fourKStats = await start({ 
-                dataUri: "http://localhost:3000/video_4k", 
+                dataUri: "/video_4k", 
                 rendererName: "2d", 
                 canvas: document.getElementById("videoCanvas") 
             });
