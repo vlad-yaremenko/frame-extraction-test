@@ -1,56 +1,58 @@
 // Wraps an MP4Box File as a WritableStream underlying sink.
-class MP4FileSink {
-  #setStatus = null;
-  #file = null;
-  #offset = 0;
-
-  constructor(file, setStatus) {
-    this.#file = file;
-    this.#setStatus = setStatus;
-  }
-
-  write(chunk) {
-    // MP4Box.js requires buffers to be ArrayBuffers, but we have a Uint8Array.
-    const buffer = new ArrayBuffer(chunk.byteLength);
-    new Uint8Array(buffer).set(chunk);
-
-    // Inform MP4Box where in the file this chunk is from.
-    buffer.fileStart = this.#offset;
-    this.#offset += buffer.byteLength;
-
-    // Append chunk.
-    // this.#setStatus("fetch", (this.#offset / 1024 ** 2).toFixed(1) + " MiB");
-    this.#file.appendBuffer(buffer);
-  }
-
-  close() {
-    this.#setStatus("fetch", "Done");
-    console.log("close", this.#file);
-    this.#file.flush();
-  }
-}
-
 // Demuxes the first video track of an MP4 file using MP4Box, calling
 // `onConfig()` and `onChunk()` with appropriate WebCodecs objects.
 class MP4Demuxer {
   #onConfig = null;
   #onChunk = null;
-  #setStatus = null;
+  // #setStatus = null;
   #file = null;
+  #onEnd = null;
+  constructor(uri, { onConfig, onChunk, onEnd }) {
+    class MP4FileSink {
+      // #setStatus = null;
+      #file = null;
+      #offset = 0;
 
-  constructor(uri, { onConfig, onChunk, setStatus }) {
+      constructor(file) {
+        this.#file = file;
+        // this.#setStatus = setStatus;
+      }
+
+      write(chunk) {
+        // MP4Box.js requires buffers to be ArrayBuffers, but we have a Uint8Array.
+        const buffer = new ArrayBuffer(chunk.byteLength);
+        new Uint8Array(buffer).set(chunk);
+
+        // Inform MP4Box where in the file this chunk is from.
+        buffer.fileStart = this.#offset;
+        this.#offset += buffer.byteLength;
+
+        // Append chunk.
+        // this.#setStatus("fetch", (this.#offset / 1024 ** 2).toFixed(1) + " MiB");
+        this.#file.appendBuffer(buffer);
+      }
+
+      close() {
+        // this.#setStatus("fetch", "Done");
+        console.log("close", this.#file);
+        this.#file.flush();
+        onEnd();
+      }
+    }
+
     this.#onConfig = onConfig;
     this.#onChunk = onChunk;
-    this.#setStatus = setStatus;
+    // this.#setStatus = setStatus;
+    this.#onEnd = onEnd;
 
     // Configure an MP4Box File for demuxing.
     this.#file = MP4Box.createFile();
-    this.#file.onError = (error) => setStatus("demux", error);
+    // this.#file.onError = (error) => setStatus("demux", error);
     this.#file.onReady = this.#onReady.bind(this);
     this.#file.onSamples = this.#onSamples.bind(this);
 
     // Fetch the file and pipe the data through.
-    const fileSink = new MP4FileSink(this.#file, setStatus);
+    const fileSink = new MP4FileSink(this.#file);
     // TDOOD: try to use HLS stream DATA
     fetch(uri).then((response) => {
       // console.log("response", response);
@@ -77,7 +79,7 @@ class MP4Demuxer {
 
   #onReady(info) {
     console.log("onReady", info);
-    this.#setStatus("demux", "Ready");
+    // this.#setStatus("demux", "Ready");
     const track = info.videoTracks[0];
 
     // Generate and emit an appropriate VideoDecoderConfig.

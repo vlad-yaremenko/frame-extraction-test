@@ -16,17 +16,7 @@
 <body>
     <h2>Streaming MP4 & Rendering to Canvas</h2>
 
-    <select id="renderer-select">
-        <option value="video">video</option>
-        <option value="video_4k">video_4k</option>
-    </select>
-
-    <button id="play-button">Play</button>
-
     <canvas style="width: 100px;" id="videoCanvas"></canvas>
-
-    <input style="width: 100%;" type="range" min="1" max="5023" value="1" class="slider" id="myRange">
-    <input type="number" min="1" max="5023" value="1" id="frame-number">
 
     <script>
     class Canvas2DRenderer {
@@ -46,41 +36,11 @@
         }
     };
 
-    const slider = document.getElementById("myRange");
-    const frameNumberInput = document.getElementById("frame-number");
-
-    frameNumberInput.addEventListener("input", function () {
-        pendingFrame = frames[this.value - 1];
-
-        slider.value = this.value;
-
-        requestAnimationFrame(renderAnimationFrame);
-    });
-
-    slider.addEventListener("input", function () {
-        pendingFrame = frames[this.value - 1];
-
-        frameNumberInput.value = this.value;
-
-        requestAnimationFrame(renderAnimationFrame);
-    });
-
     // Status UI. Messages are batched per animation frame.
     let pendingStatus = null;
 
-    function setStatus(type, message) {
-        console.log("setStatus", type, message);
-        if (pendingStatus) {
-            pendingStatus[type] = message;
-        } else {
-            pendingStatus = { [type]: message };
-            self.requestAnimationFrame(statusAnimationFrame);
-        }
-    }
-
     function statusAnimationFrame() {
         self.postMessage(pendingStatus);
-        pendingStatus = null;
     }
 
     // Rendering. Drawing is limited to once per animation frame.
@@ -97,14 +57,14 @@
             requestAnimationFrame(renderAnimationFrame);
         } else {
             // Close the current pending frame before replacing it.
-            // pendingFrame.close();
+            pendingFrame.close();
         }
         // Set or replace the pending frame.
         pendingFrame = frame;
         frames.push(frame);
         allocationSize += frame?.allocationSize() || 0;
         // console.log("frames", frames);
-        console.log("allocationSize MB", allocationSize / 1024 / 1024);
+        // console.log("allocationSize MB", allocationSize / 1024 / 1024);
     }
 
     function renderAnimationFrame() {
@@ -113,75 +73,142 @@
     }
 
     // Startup.
-    function start({ dataUri, rendererName, canvas }) {
-        // Pick a renderer to use.
-        switch (rendererName) {
-            case "2d":
-                renderer = new Canvas2DRenderer(canvas);
-                break;
-            case "webgl":
-                renderer = new WebGLRenderer(rendererName, canvas);
-                break;
-            case "webgl2":
-                renderer = new WebGLRenderer(rendererName, canvas);
-                break;
-            case "webgpu":
-                renderer = new WebGPURenderer(canvas);
-                break;
-        }
+    const start = ({ dataUri, rendererName, canvas }) => {
+        return new Promise((resolve, reject) => {
+            // add these variables near the top of the script section
+            const performanceStats = {
+                minDecodeTime: Infinity,
+                maxDecodeTime: -Infinity,
+                initializationTime: 0,
+                totalDecodeTime: 0,
+                framesDecoded: 0,
+                averageDecodeTime: 0,
+                peakMemoryUsage: 0,
+                droppedFrames: 0,
+                totalMemoryAllocated: 0
+            };
 
-        // Set up a VideoDecoder.
-        const decoder = new VideoDecoder({
-            output(frame) {
-                // Update statistics.
-                if (startTime == null) {
-                    startTime = performance.now();
-                } else {
-                    const elapsed = (performance.now() - startTime) / 1000;
-                    const fps = ++frameCount / elapsed;
-                    setStatus("render", `${fps.toFixed(0)} fps`);
+
+            performance.mark('decoder-init-start');
+            
+            // Pick a renderer to use.
+            renderer = new Canvas2DRenderer(canvas);
+
+            // Set up a VideoDecoder.
+            const decoder = new VideoDecoder({
+                output(frame) {
+                    performance.mark('decoder-output-start');
+                    
+                    // Update statistics
+                    performanceStats.framesDecoded++;
+                    performanceStats.totalMemoryAllocated += frame.allocationSize();
+                    performanceStats.peakMemoryUsage = Math.max(
+                        performanceStats.peakMemoryUsage, 
+                        frame.allocationSize()
+                    );
+                    
+                    // Calculate decode time for this frame
+                    const decodeTime = performance.measure(
+                        'decode-time',
+                        'decoder-decode',
+                        'decoder-output-start'
+                    ).duration;
+                    
+                    performanceStats.totalDecodeTime += decodeTime;
+                    performanceStats.minDecodeTime = Math.min(performanceStats.minDecodeTime, decodeTime);
+                    performanceStats.maxDecodeTime = Math.max(performanceStats.maxDecodeTime, decodeTime);
+                    performanceStats.averageDecodeTime = 
+                        performanceStats.totalDecodeTime / performanceStats.framesDecoded;
+
+                    renderFrame(frame);
+                },
+                error(e) {
+                    performanceStats.droppedFrames++;
+                    reject(e);
                 }
+            });
 
-                // Schedule the frame to be rendered.
-                renderFrame(frame);
-            },
-            error(e) {
-                setStatus("decode", e);
-            }
-        });
+            // Fetch and demux the media data.
+                const demuxer = new MP4Demuxer(dataUri, {
+                    onConfig(config) {
+                        performance.mark('decoder-configure-start');
+                        decoder.configure(config);
+                        performance.mark('decoder-configure-end');
+                        
+                        performanceStats.initializationTime = performance.measure(
+                            'init-time',
+                            'decoder-init-start',
+                            'decoder-configure-end'
+                        ).duration;
+                    },
+                    onChunk(chunk) {
+                        performance.mark('decoder-decode');
+                        decoder.decode(chunk);
+                    },
+                onEnd() {
+                    setTimeout(async () => {
+                            // Send final performance stats
+                        const finalStats = {
+                            ...performanceStats,
+                            totalDuration: performance.now() - startTime,
+                            effectiveFPS: performanceStats.framesDecoded / 
+                                ((performance.now() - startTime) / 1000),
+                            averageMemoryPerFrame: 
+                                performanceStats.totalMemoryAllocated / performanceStats.framesDecoded,
+                        };
 
-        // Fetch and demux the media data.
-        const demuxer = new MP4Demuxer(dataUri, {
-            onConfig(config) {
-                setStatus("decode", `${config.codec} @ ${config.codedWidth}x${config.codedHeight}`);
-                console.log('config', config);
-                decoder.configure(config);
-            },
-            onChunk(chunk) {
-                decoder.decode(chunk);
-            },
-            setStatus
+                        // Replace the existing fetch call with more comprehensive stats
+                        await fetch('http://localhost:3000/measure', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                client_info: navigator.userAgent,
+                                performance_stats: finalStats,
+                                video_type: dataUri.includes('4k') ? '4k' : 'hd',
+                                timestamp: new Date().toISOString()
+                            })
+                        });
+
+
+                        resolve(finalStats)
+                    }, 2000);
+                },
+                setStatus(status) {
+                    console.log('status', status);
+                }
+            });
         });
     }
 
-    const rendererSelect = document.getElementById("renderer-select");
-
-    const renderSelectValue = rendererSelect.value;
-
-    rendererSelect.addEventListener("change", function () {
-        const renderSelectValue = this.value;
-    });
-
-
-    const playButton = document.getElementById("play-button");
-    playButton.addEventListener("click", function () {
-        const renderSelectValue = rendererSelect.value;
-        start({ dataUri: `http://localhost:3000/${renderSelectValue}`, rendererName: "2d", canvas: document.getElementById("videoCanvas") });
-    });
-
     // https://w3c.github.io/webcodecs/samples/data/bbb_video_avc_frag.mp4
-    // start({ dataUri: "http://localhost:3000/video", rendererName: "2d", canvas: document.getElementById("videoCanvas") });
-    // start({ dataUri: "http://localhost:3000/video_4k", rendererName: "2d", canvas: document.getElementById("videoCanvas") });
+
+    document.addEventListener('DOMContentLoaded', async () => {
+        try {
+            console.log("Starting HD video decode...");
+            const hdStats = await start({ 
+                dataUri: "http://localhost:3000/video", 
+                rendererName: "2d", 
+                canvas: document.getElementById("videoCanvas") 
+            });
+            console.log("HD Video Performance Stats:", hdStats);
+
+            console.log("Starting 4K video decode...");
+            const fourKStats = await start({ 
+                dataUri: "http://localhost:3000/video_4k", 
+                rendererName: "2d", 
+                canvas: document.getElementById("videoCanvas") 
+            });
+            console.log("4K Video Performance Stats:", fourKStats);
+
+            alert("We're done here! you get a buff to boost your karma!")
+
+        } catch (error) {
+            console.error("Decoding error:", error);
+        }
+    })
+
     </script>
 </body>
 
