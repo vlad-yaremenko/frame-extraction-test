@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 const VIDEO_PATH = path.join(__dirname, "video.mp4"); // Change to your 4K video file
 
 app.use(express.static(path.join(__dirname, "public")));
