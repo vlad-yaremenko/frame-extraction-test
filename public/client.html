@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MP4 Streaming & Frame Decoding</title>
+    <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/mp4box.js/0.5.2/mp4box.all.min.js"></script> -->
+    <script src="
+    https://cdn.jsdelivr.net/npm/mp4box@0.5.3/dist/mp4box.all.min.js
+    "></script>
+    <script src="demuxer_mp4.js"></script>
+
+</head>
+
+<body>
+    <h2>Streaming MP4 & Rendering to Canvas</h2>
+
+    <select id="renderer-select">
+        <option value="video">video</option>
+        <option value="video_4k">video_4k</option>
+    </select>
+
+    <button id="play-button">Play</button>
+
+    <canvas style="width: 100px;" id="videoCanvas"></canvas>
+
+    <input style="width: 100%;" type="range" min="1" max="5023" value="1" class="slider" id="myRange">
+    <input type="number" min="1" max="5023" value="1" id="frame-number">
+
+    <script>
+    class Canvas2DRenderer {
+        #canvas = null;
+        #ctx = null;
+
+        constructor(canvas) {
+            this.#canvas = canvas;
+            this.#ctx = canvas.getContext("2d");
+        }
+
+        draw(frame) {
+            this.#canvas.width = frame.displayWidth;
+            this.#canvas.height = frame.displayHeight;
+            this.#ctx.drawImage(frame, 0, 0, frame.displayWidth, frame.displayHeight);
+            frame.close();
+        }
+    };
+
+    const slider = document.getElementById("myRange");
+    const frameNumberInput = document.getElementById("frame-number");
+
+    frameNumberInput.addEventListener("input", function () {
+        pendingFrame = frames[this.value - 1];
+
+        slider.value = this.value;
+
+        requestAnimationFrame(renderAnimationFrame);
+    });
+
+    slider.addEventListener("input", function () {
+        pendingFrame = frames[this.value - 1];
+
+        frameNumberInput.value = this.value;
+
+        requestAnimationFrame(renderAnimationFrame);
+    });
+
+    // Status UI. Messages are batched per animation frame.
+    let pendingStatus = null;
+
+    function setStatus(type, message) {
+        console.log("setStatus", type, message);
+        if (pendingStatus) {
+            pendingStatus[type] = message;
+        } else {
+            pendingStatus = { [type]: message };
+            self.requestAnimationFrame(statusAnimationFrame);
+        }
+    }
+
+    function statusAnimationFrame() {
+        self.postMessage(pendingStatus);
+        pendingStatus = null;
+    }
+
+    // Rendering. Drawing is limited to once per animation frame.
+    let renderer = null;
+    const frames = [];
+    let pendingFrame = null;
+    let startTime = null;
+    let frameCount = 0;
+    let allocationSize = 0;
+
+    function renderFrame(frame) {
+        if (!pendingFrame) {
+            // Schedule rendering in the next animation frame.
+            requestAnimationFrame(renderAnimationFrame);
+        } else {
+            // Close the current pending frame before replacing it.
+            // pendingFrame.close();
+        }
+        // Set or replace the pending frame.
+        pendingFrame = frame;
+        frames.push(frame);
+        allocationSize += frame?.allocationSize() || 0;
+        // console.log("frames", frames);
+        console.log("allocationSize MB", allocationSize / 1024 / 1024);
+    }
+
+    function renderAnimationFrame() {
+        renderer.draw(pendingFrame);
+        pendingFrame = null;
+    }
+
+    // Startup.
+    function start({ dataUri, rendererName, canvas }) {
+        // Pick a renderer to use.
+        switch (rendererName) {
+            case "2d":
+                renderer = new Canvas2DRenderer(canvas);
+                break;
+            case "webgl":
+                renderer = new WebGLRenderer(rendererName, canvas);
+                break;
+            case "webgl2":
+                renderer = new WebGLRenderer(rendererName, canvas);
+                break;
+            case "webgpu":
+                renderer = new WebGPURenderer(canvas);
+                break;
+        }
+
+        // Set up a VideoDecoder.
+        const decoder = new VideoDecoder({
+            output(frame) {
+                // Update statistics.
+                if (startTime == null) {
+                    startTime = performance.now();
+                } else {
+                    const elapsed = (performance.now() - startTime) / 1000;
+                    const fps = ++frameCount / elapsed;
+                    setStatus("render", `${fps.toFixed(0)} fps`);
+                }
+
+                // Schedule the frame to be rendered.
+                renderFrame(frame);
+            },
+            error(e) {
+                setStatus("decode", e);
+            }
+        });
+
+        // Fetch and demux the media data.
+        const demuxer = new MP4Demuxer(dataUri, {
+            onConfig(config) {
+                setStatus("decode", `${config.codec} @ ${config.codedWidth}x${config.codedHeight}`);
+                console.log('config', config);
+                decoder.configure(config);
+            },
+            onChunk(chunk) {
+                decoder.decode(chunk);
+            },
+            setStatus
+        });
+    }
+
+    const rendererSelect = document.getElementById("renderer-select");
+
+    const renderSelectValue = rendererSelect.value;
+
+    rendererSelect.addEventListener("change", function () {
+        const renderSelectValue = this.value;
+    });
+
+
+    const playButton = document.getElementById("play-button");
+    playButton.addEventListener("click", function () {
+        const renderSelectValue = rendererSelect.value;
+        start({ dataUri: `http://localhost:3000/${renderSelectValue}`, rendererName: "2d", canvas: document.getElementById("videoCanvas") });
+    });
+
+    // https://w3c.github.io/webcodecs/samples/data/bbb_video_avc_frag.mp4
+    // start({ dataUri: "http://localhost:3000/video", rendererName: "2d", canvas: document.getElementById("videoCanvas") });
+    // start({ dataUri: "http://localhost:3000/video_4k", rendererName: "2d", canvas: document.getElementById("videoCanvas") });
+    </script>
+</body>
+
+</html>
